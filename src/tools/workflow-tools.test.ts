@@ -33,3 +33,14 @@ test('tool errors use JSON envelope', async () => {
   assert.equal(body.ok, false);
   assert.equal(body.error.code, 'INVALID_TEMPLATE_NAME');
 });
+
+test('typed errors surface stable codes through the envelope', async () => {
+  const response = await handleWorkflowTool('workflow_advance', {
+    instance_id: 'wf_20260101000000_abc123',
+    outputs: {},
+  });
+  assert.ok(response);
+  const body = JSON.parse(response.content[0].text);
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, 'NOT_FOUND');
+});

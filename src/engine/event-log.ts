@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
 import type { WorkflowEvent, WorkflowEventType, WorkflowEventsQuery } from '../types.js';
 import { summarizeOutputs } from './limits.js';
+import { OflowError } from './errors.js';
 import { assertInstanceId, assertStepId, safeJoin } from './security.js';
 
 function eventsDir(overrides: ConfigOverrides = {}): string {
@@ -89,13 +90,13 @@ function summarizePayload(payload: unknown): unknown {
 function parseOptionalDate(value: string | undefined, key: string): number | undefined {
   if (!value) return undefined;
   const time = new Date(value).getTime();
-  if (!Number.isFinite(time)) throw new Error(`INVALID_ARGUMENT: ${key} must be an ISO timestamp`);
+  if (!Number.isFinite(time)) throw new OflowError('INVALID_ARGUMENT', `${key} must be an ISO timestamp`);
   return time;
 }
 
 function normalizeLimit(limit: number | undefined): number {
   if (limit === undefined) return 50;
-  if (!Number.isFinite(limit) || limit < 1) throw new Error('INVALID_ARGUMENT: limit must be a positive number');
+  if (!Number.isFinite(limit) || limit < 1) throw new OflowError('INVALID_ARGUMENT', 'limit must be a positive number');
   return Math.min(Math.floor(limit), 200);
 }
 

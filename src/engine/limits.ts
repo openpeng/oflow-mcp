@@ -1,3 +1,5 @@
+import { OflowError } from './errors.js';
+
 export const MAX_PROMPT_BYTES = 256 * 1024;
 export const MAX_OUTPUTS_BYTES = 512 * 1024;
 export const MAX_INSTANCE_BYTES = 1024 * 1024;
@@ -15,17 +17,17 @@ export function byteLength(value: unknown): number {
 
 export function assertPromptSize(prompt: string): void {
   const size = byteLength(prompt);
-  if (size > MAX_PROMPT_BYTES) throw new Error(`PROMPT_TOO_LARGE: ${size} > ${MAX_PROMPT_BYTES}`);
+  if (size > MAX_PROMPT_BYTES) throw new OflowError('PROMPT_TOO_LARGE', `${size} > ${MAX_PROMPT_BYTES}`);
 }
 
 export function assertOutputsSize(outputs: Record<string, unknown>): void {
   const size = byteLength(outputs);
-  if (size > MAX_OUTPUTS_BYTES) throw new Error(`OUTPUTS_TOO_LARGE: ${size} > ${MAX_OUTPUTS_BYTES}`);
+  if (size > MAX_OUTPUTS_BYTES) throw new OflowError('OUTPUTS_TOO_LARGE', `${size} > ${MAX_OUTPUTS_BYTES}`);
 }
 
 export function assertInstanceSize(instance: unknown): void {
   const size = byteLength(instance);
-  if (size > MAX_INSTANCE_BYTES) throw new Error(`INSTANCE_TOO_LARGE: ${size} > ${MAX_INSTANCE_BYTES}`);
+  if (size > MAX_INSTANCE_BYTES) throw new OflowError('INSTANCE_TOO_LARGE', `${size} > ${MAX_INSTANCE_BYTES}`);
 }
 
 export function summarizeOutputs(outputs?: Record<string, unknown>): OutputSummary | undefined {

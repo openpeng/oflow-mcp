@@ -78,7 +78,7 @@ test('validation failure does not mutate state', () => {
   try {
     createDemo(config);
     const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
-    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /Checkpoint validation failed/);
+    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
     const current = getCurrent(started.instance.id, config);
     assert.equal(current.step.id, 'analyze');
     assert.equal(current.instance.steps.analyze.status, 'in_progress');
@@ -124,7 +124,7 @@ test('advanceWorkflow blocks on missing required evidence and approval', () => {
       prompts: { verify: 'verify' },
     }, config);
     const started = startWorkflow('approval-demo', {}, undefined, config);
-    assert.throws(() => advanceWorkflow(started.instance.id, { summary: 'ok' }, {}, config), /Checkpoint validation failed/);
+    assert.throws(() => advanceWorkflow(started.instance.id, { summary: 'ok' }, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
     assert.equal(loadInstance(started.instance.id, config).steps.verify.status, 'in_progress');
     assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
 

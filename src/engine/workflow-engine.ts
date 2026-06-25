@@ -11,6 +11,7 @@ import type {
   WorkflowTemplate,
 } from '../types.js';
 import { validateCheckpoint } from './checkpoint-engine.js';
+import { OflowError } from './errors.js';
 import { assertOutputsSize, assertPromptSize } from './limits.js';
 import { recordEvent } from './event-log.js';
 import { assertStepId } from './security.js';
@@ -82,7 +83,7 @@ function resolveParams(defs: ParamsDef, params: Record<string, string>): Record<
     if ((value === undefined || value === '') && def.required) missing.push(key);
     if (value !== undefined) resolved[key] = String(value);
     if (value !== undefined && def.pattern && !new RegExp(def.pattern).test(String(value))) {
-      throw new Error(`Parameter ${key} pattern mismatch: ${def.pattern}`);
+      throw new OflowError('INVALID_ARGUMENT', `Parameter ${key} pattern mismatch: ${def.pattern}`);
     }
   }
 
@@ -90,7 +91,7 @@ function resolveParams(defs: ParamsDef, params: Record<string, string>): Record<
     if (!(key in resolved)) resolved[key] = String(value);
   }
 
-  if (missing.length) throw new Error(`Missing required parameters: ${missing.join(', ')}`);
+  if (missing.length) throw new OflowError('INVALID_ARGUMENT', `Missing required parameters: ${missing.join(', ')}`);
   return resolved;
 }
 
@@ -100,7 +101,7 @@ export function getCurrent(instanceIdOrAlias?: string, overrides: ConfigOverride
     instance = resolveInstance(instanceIdOrAlias, overrides);
   } else {
     instance = listInstances({ status: 'active' }, overrides).instances[0];
-    if (!instance) throw new Error('No active workflow instance found');
+    if (!instance) throw new OflowError('NOT_FOUND', 'No active workflow instance found');
   }
   return currentFromInstance(instance, overrides);
 }
@@ -123,11 +124,11 @@ function promptForInstance(instance: WorkflowInstance, stepId: string, overrides
   const snapshot = instance.prompt_snapshots?.[stepId];
   if (snapshot !== undefined) return snapshot;
   if (instance.template_snapshot && instance.prompt_snapshots) {
-    throw new Error(`PROMPT_SNAPSHOT_MISSING: ${stepId}`);
+    throw new OflowError('PROMPT_SNAPSHOT_MISSING', stepId);
   }
   const prompts = loadPromptSnapshots(templateForInstance(instance, overrides), instance.template, overrides);
   const prompt = prompts[stepId];
-  if (prompt === undefined) throw new Error(`Prompt not found in snapshot: ${stepId}`);
+  if (prompt === undefined) throw new OflowError('NOT_FOUND', `Prompt not found in snapshot: ${stepId}`);
   return prompt;
 }
 
@@ -138,7 +139,7 @@ export function advanceWorkflow(
   overrides: ConfigOverrides = {},
 ): WorkflowAdvanceResult {
   const instance = resolveInstance(instanceId, overrides);
-  if (instance.status === 'completed') throw new Error(`Workflow instance already completed: ${instance.id}`);
+  if (instance.status === 'completed') throw new OflowError('CONFLICT', `Workflow instance already completed: ${instance.id}`);
 
   assertOutputsSize(outputs);
   const template = templateForInstance(instance, overrides);
@@ -146,7 +147,7 @@ export function advanceWorkflow(
 
   const proposedConsumed = (instance.token_usage?.total_consumed ?? 0) + Math.max(0, options.token_consumed ?? 0);
   if (template.token_budget && proposedConsumed > template.token_budget.total) {
-    throw new Error(`Token budget exhausted: ${proposedConsumed} / ${template.token_budget.total}`);
+    throw new OflowError('TOKEN_BUDGET_EXHAUSTED', `${proposedConsumed} / ${template.token_budget.total}`);
   }
 
   const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? [], options.evidence ?? {}, options.approvals ?? {});
@@ -154,9 +155,7 @@ export function advanceWorkflow(
     const details = checkpointFailureDetails(validation.errors);
     recordEvent('step.validation_failed', instance.id, { errors: validation.errors, details }, step.id, overrides);
     const message = validation.errors.map(error => `${error.message}${error.help ? ` (${error.help})` : ''}`).join('; ');
-    const err = new Error(`Checkpoint validation failed: ${message}`);
-    (err as Error & { details?: unknown }).details = details;
-    throw err;
+    throw new OflowError('CHECKPOINT_VALIDATION_FAILED', message, details);
   }
 
   const expectedVersion = instance.version;
@@ -223,7 +222,7 @@ function resolveNextStep(step: WorkflowStep, conditionResult?: string): string |
   if (step.next === null || typeof step.next === 'string') return step.next;
   const key = conditionResult ?? 'pass';
   const next = step.next[key];
-  if (!next) throw new Error(`No branch matched condition_result "${key}" for step ${step.id}`);
+  if (!next) throw new OflowError('INVALID_ARGUMENT', `No branch matched condition_result "${key}" for step ${step.id}`);
   return next;
 }
 
@@ -244,7 +243,7 @@ export function bindWorkflowAlias(instanceId: string, alias: string, overrides: 
 export function overridePrompt(instanceIdOrAlias: string, stepId: string, prompt: string, overrides: ConfigOverrides = {}): WorkflowInstance {
   assertStepId(stepId);
   assertPromptSize(prompt);
-  if (!prompt.trim()) throw new Error('Prompt must not be empty');
+  if (!prompt.trim()) throw new OflowError('INVALID_ARGUMENT', 'Prompt must not be empty');
   const instance = resolveInstance(instanceIdOrAlias, overrides);
   const template = templateForInstance(instance, overrides);
   findStep(template, stepId);
@@ -263,6 +262,6 @@ export function createWorkflowTemplate(options: CreateTemplateOptions, overrides
 function findStep(template: WorkflowTemplate, stepId: string): WorkflowStep {
   assertStepId(stepId);
   const step = template.steps.find(candidate => candidate.id === stepId);
-  if (!step) throw new Error(`Step not found in template ${template.name}: ${stepId}`);
+  if (!step) throw new OflowError('NOT_FOUND', `Step not found in template ${template.name}: ${stepId}`);
   return step;
 }

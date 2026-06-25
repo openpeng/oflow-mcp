@@ -23,7 +23,7 @@ test('worklog includes timeline summaries and validation failures', () => {
       prompts: { verify: 'verify' },
     }, config);
     const started = startWorkflow('worklog-demo', {}, undefined, config);
-    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /Checkpoint validation failed/);
+    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
     advanceWorkflow(started.instance.id, { summary: 'x'.repeat(300) }, {}, config);
 
     const worklog = buildWorklog(started.instance.id, {}, config);

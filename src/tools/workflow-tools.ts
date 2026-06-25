@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { CreateTemplateOptions, InboxPriority, InboxStatus, ToolEnvelope, WorkflowEventType, WorklogMode } from '../types.js';
+import { isOflowError, OflowError } from '../engine/errors.js';
 import { summarizeOutputs } from '../engine/limits.js';
 import { queryEvents } from '../engine/event-log.js';
 import { buildDashboard } from '../engine/dashboard-engine.js';
@@ -384,6 +385,9 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         return null;
     }
   } catch (err) {
+    if (isOflowError(err)) {
+      return envelopeError(err.code, err.message, err.details);
+    }
     return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err), errorDetails(err));
   }
 }
@@ -401,9 +405,8 @@ function text(value: ToolEnvelope) {
 }
 
 function errorCode(err: unknown): string {
+  if (isOflowError(err)) return err.code;
   const message = err instanceof Error ? err.message : String(err);
-  const prefix = message.match(/^([A-Z_]+):/);
-  if (prefix) return prefix[1];
   if (message.includes('Checkpoint validation failed')) return 'CHECKPOINT_VALIDATION_FAILED';
   if (message.includes('not found')) return 'NOT_FOUND';
   if (message.includes('already')) return 'CONFLICT';
@@ -412,12 +415,13 @@ function errorCode(err: unknown): string {
 }
 
 function errorDetails(err: unknown): unknown {
+  if (isOflowError(err)) return err.details;
   return err && typeof err === 'object' && 'details' in err ? (err as { details?: unknown }).details : undefined;
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`Missing required string: ${key}`);
+  if (typeof value !== 'string' || !value.trim()) throw new OflowError('INVALID_ARGUMENT', `Missing required string: ${key}`);
   return value;
 }
 
@@ -438,26 +442,26 @@ function optionalStringArray(args: Record<string, unknown>, key: string): string
 
 function objectArg<T extends object>(args: Record<string, unknown>, key: string): T {
   const value = args[key];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Missing required object: ${key}`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Missing required object: ${key}`);
   return value as T;
 }
 
 function optionalObject<T extends object>(args: Record<string, unknown>, key: string): T | undefined {
   const value = args[key];
   if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid object: ${key}`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Invalid object: ${key}`);
   return value as T;
 }
 
 function arrayArg<T>(args: Record<string, unknown>, key: string): T[] {
   const value = args[key];
-  if (!Array.isArray(value)) throw new Error(`Missing required array: ${key}`);
+  if (!Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Missing required array: ${key}`);
   return value as T[];
 }
 
 function requiredStringArray(args: Record<string, unknown>, key: string): string[] {
   const value = args[key];
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error(`Missing required string array: ${key}`);
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new OflowError('INVALID_ARGUMENT', `Missing required string array: ${key}`);
   return value as string[];
 }
 
@@ -470,7 +474,7 @@ function paramsArg(args: Record<string, unknown>, key: string): Record<string, s
   const value = objectArg<Record<string, unknown>>(args, key);
   const params: Record<string, string> = {};
   for (const [paramKey, paramValue] of Object.entries(value)) {
-    if (typeof paramValue === 'object' && paramValue !== null) throw new Error(`Invalid parameter value: ${paramKey}`);
+    if (typeof paramValue === 'object' && paramValue !== null) throw new OflowError('INVALID_ARGUMENT', `Invalid parameter value: ${paramKey}`);
     params[paramKey] = String(paramValue);
   }
   return params;
@@ -490,7 +494,7 @@ function optionalInboxStatus(args: Record<string, unknown>): InboxStatus | undef
 
 function requiredInboxStatus(args: Record<string, unknown>): InboxStatus {
   const status = optionalInboxStatus(args);
-  if (!status) throw new Error('Missing required string: status');
+  if (!status) throw new OflowError('INVALID_ARGUMENT', 'Missing required string: status');
   return status;
 }
 
