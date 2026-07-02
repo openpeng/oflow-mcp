@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { CreateTemplateOptions, InboxPriority, InboxStatus, ToolEnvelope, WorkflowEventType, WorklogMode } from '../types.js';
+import { isOflowError, OflowError } from '../engine/errors.js';
 import { summarizeOutputs } from '../engine/limits.js';
 import { queryEvents } from '../engine/event-log.js';
 import { buildDashboard } from '../engine/dashboard-engine.js';
@@ -17,6 +18,7 @@ import {
   overridePrompt,
   startWorkflow,
 } from '../engine/workflow-engine.js';
+import { findRelevantMemories } from '../engine/memory-lookup.js';
 
 export const workflowTools: Tool[] = [
   {
@@ -48,10 +50,13 @@ export const workflowTools: Tool[] = [
   },
   {
     name: 'workflow_current',
-    description: 'Get the current workflow step and rendered prompt. ID may be an instance id or alias. If omitted, uses the most recently active instance.',
+    description: 'Get the current workflow step and rendered prompt. ID may be an instance id or alias. If omitted, uses the most recently active instance. By default, relevant project memories are injected into the prompt. Set include_memories=false to skip.',
     inputSchema: {
       type: 'object',
-      properties: { instance_id: { type: 'string', description: 'Instance ID or alias' } },
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias' },
+        include_memories: { type: 'boolean', description: 'Include memory summaries at the top of the prompt. Default true.' },
+      },
     },
   },
   {
@@ -232,6 +237,18 @@ export const workflowTools: Tool[] = [
       required: ['name'],
     },
   },
+  {
+    name: 'workflow_memory_recommend',
+    description: 'Recommend project memories relevant to a step name or query. Returns L2-level summaries (name + type + summary).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        step_name: { type: 'string', description: 'Step name or free-text keyword query' },
+        limit: { type: 'number', description: 'Max results, default 5' },
+      },
+      required: ['step_name'],
+    },
+  },
 ];
 
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
@@ -262,7 +279,7 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         });
       }
       case 'workflow_current': {
-        const result = getCurrent(optionalString(args, 'instance_id'));
+        const result = getCurrent(optionalString(args, 'instance_id'), { include_memories: args.include_memories !== false });
         return envelope({
           instance_id: result.instance.id,
           status: result.instance.status,
@@ -380,10 +397,26 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         const prompts = loadPromptSnapshots(template, name);
         return envelope(validateTemplateControlPlane(template, prompts));
       }
+      case 'workflow_memory_recommend': {
+        const result = findRelevantMemories(requiredString(args, 'step_name'));
+        const limit = optionalNumber(args, 'limit') || 5;
+        return envelope({
+          query: requiredString(args, 'step_name'),
+          count: Math.min(result.length, limit),
+          memories: result.slice(0, limit).map(m => ({
+            name: m.name,
+            type: m.type,
+            summary: m.summary,
+          })),
+        });
+      }
       default:
         return null;
     }
   } catch (err) {
+    if (isOflowError(err)) {
+      return envelopeError(err.code, err.message, err.details);
+    }
     return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err), errorDetails(err));
   }
 }
@@ -401,9 +434,8 @@ function text(value: ToolEnvelope) {
 }
 
 function errorCode(err: unknown): string {
+  if (isOflowError(err)) return err.code;
   const message = err instanceof Error ? err.message : String(err);
-  const prefix = message.match(/^([A-Z_]+):/);
-  if (prefix) return prefix[1];
   if (message.includes('Checkpoint validation failed')) return 'CHECKPOINT_VALIDATION_FAILED';
   if (message.includes('not found')) return 'NOT_FOUND';
   if (message.includes('already')) return 'CONFLICT';
@@ -412,12 +444,13 @@ function errorCode(err: unknown): string {
 }
 
 function errorDetails(err: unknown): unknown {
+  if (isOflowError(err)) return err.details;
   return err && typeof err === 'object' && 'details' in err ? (err as { details?: unknown }).details : undefined;
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`Missing required string: ${key}`);
+  if (typeof value !== 'string' || !value.trim()) throw new OflowError('INVALID_ARGUMENT', `Missing required string: ${key}`);
   return value;
 }
 
@@ -438,26 +471,26 @@ function optionalStringArray(args: Record<string, unknown>, key: string): string
 
 function objectArg<T extends object>(args: Record<string, unknown>, key: string): T {
   const value = args[key];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Missing required object: ${key}`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Missing required object: ${key}`);
   return value as T;
 }
 
 function optionalObject<T extends object>(args: Record<string, unknown>, key: string): T | undefined {
   const value = args[key];
   if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid object: ${key}`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Invalid object: ${key}`);
   return value as T;
 }
 
 function arrayArg<T>(args: Record<string, unknown>, key: string): T[] {
   const value = args[key];
-  if (!Array.isArray(value)) throw new Error(`Missing required array: ${key}`);
+  if (!Array.isArray(value)) throw new OflowError('INVALID_ARGUMENT', `Missing required array: ${key}`);
   return value as T[];
 }
 
 function requiredStringArray(args: Record<string, unknown>, key: string): string[] {
   const value = args[key];
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error(`Missing required string array: ${key}`);
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new OflowError('INVALID_ARGUMENT', `Missing required string array: ${key}`);
   return value as string[];
 }
 
@@ -470,7 +503,7 @@ function paramsArg(args: Record<string, unknown>, key: string): Record<string, s
   const value = objectArg<Record<string, unknown>>(args, key);
   const params: Record<string, string> = {};
   for (const [paramKey, paramValue] of Object.entries(value)) {
-    if (typeof paramValue === 'object' && paramValue !== null) throw new Error(`Invalid parameter value: ${paramKey}`);
+    if (typeof paramValue === 'object' && paramValue !== null) throw new OflowError('INVALID_ARGUMENT', `Invalid parameter value: ${paramKey}`);
     params[paramKey] = String(paramValue);
   }
   return params;
@@ -490,7 +523,7 @@ function optionalInboxStatus(args: Record<string, unknown>): InboxStatus | undef
 
 function requiredInboxStatus(args: Record<string, unknown>): InboxStatus {
   const status = optionalInboxStatus(args);
-  if (!status) throw new Error('Missing required string: status');
+  if (!status) throw new OflowError('INVALID_ARGUMENT', 'Missing required string: status');
   return status;
 }
 

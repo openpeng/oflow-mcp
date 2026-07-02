@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import yaml from 'js-yaml';
 import { getConfig, type ConfigOverrides } from '../config.js';
+import { OflowError, isOflowError } from './errors.js';
 import { assertPromptSize } from './limits.js';
 import { assertStepId, assertTemplateName, safeJoin } from './security.js';
 import type {
@@ -66,23 +67,23 @@ export function listTemplates(overrides: ConfigOverrides = {}): TemplateSummary[
 
 export function loadTemplate(name: string, overrides: ConfigOverrides = {}): WorkflowTemplate {
   const path = templatePath(name, overrides);
-  if (!existsSync(path)) throw new Error(`Template not found: ${name}`);
+  if (!existsSync(path)) throw new OflowError('NOT_FOUND', `Template not found: ${name}`);
 
   try {
     const loaded = yaml.load(readFileSync(path, 'utf-8')) as WorkflowTemplate;
     validateTemplate(loaded, { templateName: name, requirePrompts: false, config: overrides });
     return loaded;
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('Template ')) throw err;
+    if (isOflowError(err)) throw err;
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to load template ${name} at ${path}: ${cause}`);
+    throw new OflowError('INVALID_ARGUMENT', `Failed to load template ${name} at ${path}: ${cause}`);
   }
 }
 
 export function loadPrompt(templateName: string, stepId: string, overrides: ConfigOverrides = {}): string {
   assertStepId(stepId);
   const path = safeJoin(templateDir(templateName, overrides), 'prompts', `${stepId}.md`);
-  if (!existsSync(path)) throw new Error(`Prompt not found for ${templateName}/${stepId}: ${path}`);
+  if (!existsSync(path)) throw new OflowError('NOT_FOUND', `Prompt not found for ${templateName}/${stepId}: ${path}`);
   const prompt = readFileSync(path, 'utf-8');
   assertPromptSize(prompt);
   return prompt;
@@ -104,12 +105,12 @@ export interface ValidateTemplateOptions {
 }
 
 export function validateTemplate(template: WorkflowTemplate, options: ValidateTemplateOptions = {}): void {
-  if (!template || typeof template !== 'object') throw new Error('Template must be an object');
-  if (!template.name) throw new Error('Template name is required');
+  if (!template || typeof template !== 'object') throw new OflowError('INVALID_ARGUMENT', 'Template must be an object');
+  if (!template.name) throw new OflowError('INVALID_ARGUMENT', 'Template name is required');
   assertTemplateName(template.name);
-  if (!template.description) throw new Error(`Template ${template.name} description is required`);
+  if (!template.description) throw new OflowError('INVALID_ARGUMENT', `Template ${template.name} description is required`);
   if (!Array.isArray(template.steps) || template.steps.length === 0) {
-    throw new Error(`Template ${template.name} must define at least one step`);
+    throw new OflowError('INVALID_ARGUMENT', `Template ${template.name} must define at least one step`);
   }
 
   normalizeParams(template.params);
@@ -117,7 +118,7 @@ export function validateTemplate(template: WorkflowTemplate, options: ValidateTe
   const stepIds = new Set<string>();
   for (const step of template.steps) {
     validateStepShape(template.name, step);
-    if (stepIds.has(step.id)) throw new Error(`Template ${template.name} has duplicate step id: ${step.id}`);
+    if (stepIds.has(step.id)) throw new OflowError('INVALID_ARGUMENT', `Template ${template.name} has duplicate step id: ${step.id}`);
     stepIds.add(step.id);
   }
 
@@ -130,12 +131,12 @@ export function validateTemplate(template: WorkflowTemplate, options: ValidateTe
       if (options.prompts) {
         const prompt = options.prompts[step.id];
         if (typeof prompt !== 'string' || !prompt.trim()) {
-          throw new Error(`Template ${template.name} missing prompt content for step: ${step.id}`);
+          throw new OflowError('INVALID_ARGUMENT', `Template ${template.name} missing prompt content for step: ${step.id}`);
         }
         assertPromptSize(prompt);
       } else {
         const promptPath = safeJoin(templateDir(options.templateName ?? template.name, options.config), 'prompts', `${step.id}.md`);
-        if (!existsSync(promptPath)) throw new Error(`Template ${template.name} missing prompt file for step: ${step.id}`);
+        if (!existsSync(promptPath)) throw new OflowError('INVALID_ARGUMENT', `Template ${template.name} missing prompt file for step: ${step.id}`);
         assertPromptSize(readFileSync(promptPath, 'utf-8'));
       }
     }
@@ -143,18 +144,18 @@ export function validateTemplate(template: WorkflowTemplate, options: ValidateTe
 }
 
 function validateStepShape(templateName: string, step: WorkflowStep): void {
-  if (!step || typeof step !== 'object') throw new Error(`Template ${templateName} has invalid step`);
-  if (!step.id) throw new Error(`Template ${templateName} has a step without id`);
+  if (!step || typeof step !== 'object') throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} has invalid step`);
+  if (!step.id) throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} has a step without id`);
   assertStepId(step.id);
-  if (!step.name) throw new Error(`Template ${templateName} step ${step.id} has no name`);
+  if (!step.name) throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} has no name`);
   if (!Object.prototype.hasOwnProperty.call(step, 'next')) {
-    throw new Error(`Template ${templateName} step ${step.id} must define next`);
+    throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} must define next`);
   }
 
   const requiredOutputs = step.checkpoint?.required_outputs;
   if (requiredOutputs && !Array.isArray(requiredOutputs)) {
     for (const [key, def] of Object.entries(requiredOutputs as Record<string, RequiredOutputDef>)) {
-      if (!key || typeof def !== 'object') throw new Error(`Template ${templateName} step ${step.id} has invalid required output`);
+      if (!key || typeof def !== 'object') throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} has invalid required output`);
     }
   }
 }
@@ -163,19 +164,19 @@ function validateNext(templateName: string, step: WorkflowStep, stepIds: Set<str
   if (step.next === null) return;
   if (typeof step.next === 'string') {
     if (!stepIds.has(step.next)) {
-      throw new Error(`Template ${templateName} step ${step.id} next points to missing step: ${step.next}`);
+      throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} next points to missing step: ${step.next}`);
     }
     return;
   }
   if (typeof step.next === 'object') {
     for (const [branch, target] of Object.entries(step.next)) {
       if (!stepIds.has(target)) {
-        throw new Error(`Template ${templateName} step ${step.id} branch ${branch} points to missing step: ${target}`);
+        throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} branch ${branch} points to missing step: ${target}`);
       }
     }
     return;
   }
-  throw new Error(`Template ${templateName} step ${step.id} has invalid next`);
+  throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} has invalid next`);
 }
 
 export function createTemplate(options: CreateTemplateOptions, overrides: ConfigOverrides = {}): { path: string } {
@@ -191,7 +192,7 @@ export function createTemplate(options: CreateTemplateOptions, overrides: Config
 
   const dir = templateDir(options.name, overrides);
   if (existsSync(dir) && !options.overwrite) {
-    throw new Error(`Template already exists: ${options.name}`);
+    throw new OflowError('CONFLICT', `Template already exists: ${options.name}`);
   }
 
   const promptsDir = safeJoin(dir, 'prompts');

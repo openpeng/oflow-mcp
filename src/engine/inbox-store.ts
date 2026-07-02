@@ -3,6 +3,7 @@ import { dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
 import type { InboxEntry, InboxPriority, InboxStatus, InboxSummary } from '../types.js';
+import { OflowError } from './errors.js';
 import { assertInstanceId, assertStepId, safeJoin } from './security.js';
 
 export interface InboxEntryInput {
@@ -147,7 +148,7 @@ function writeInbox(instanceId: string, entries: InboxEntry[], overrides: Config
 }
 
 function validateInput(input: InboxEntryInput): void {
-  if (!input.title.trim()) throw new Error('INVALID_ARGUMENT: inbox title must not be empty');
+  if (!input.title.trim()) throw new OflowError('INVALID_ARGUMENT', 'inbox title must not be empty');
   if (input.step_id) assertStepId(input.step_id);
 }
 
@@ -161,6 +162,6 @@ function dedup(input: InboxEntryInput, timestamp: string): { key: string; strate
 }
 
 function normalizeLimit(limit: number): number {
-  if (!Number.isFinite(limit) || limit < 1) throw new Error('INVALID_ARGUMENT: limit must be a positive number');
+  if (!Number.isFinite(limit) || limit < 1) throw new OflowError('INVALID_ARGUMENT', 'limit must be a positive number');
   return Math.min(Math.floor(limit), 200);
 }

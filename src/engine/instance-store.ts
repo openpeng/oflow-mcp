@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
 import type { ListInstancesResult, WorkflowInstance, WorkflowStatus } from '../types.js';
+import { OflowError } from './errors.js';
 import { assertInstanceSize } from './limits.js';
 import { recordEvent } from './event-log.js';
 import { assertAlias, assertInstanceId, isInstanceId, safeJoin } from './security.js';
@@ -25,7 +26,7 @@ function withInstanceLock<T>(id: string, overrides: ConfigOverrides, fn: () => T
   try {
     mkdirSync(path);
   } catch {
-    throw new Error(`INSTANCE_LOCKED: ${id}`);
+    throw new OflowError('INSTANCE_LOCKED', id);
   }
   try {
     return fn();
@@ -59,7 +60,7 @@ export function saveInstance(instance: WorkflowInstance, overrides: ConfigOverri
         } catch {
           // Preserve the conflict error even if audit logging is unavailable.
         }
-        throw new Error(`INSTANCE_VERSION_CONFLICT: Instance changed, reload before retrying`);
+        throw new OflowError('INSTANCE_VERSION_CONFLICT', 'Instance changed, reload before retrying', { expectedVersion: options.expectedVersion, actualVersion: current.version });
       }
       instance.version = current.version + 1;
     } else {
@@ -76,12 +77,12 @@ export function saveInstance(instance: WorkflowInstance, overrides: ConfigOverri
 
 export function loadInstance(id: string, overrides: ConfigOverrides = {}): WorkflowInstance {
   const path = instancePath(id, overrides);
-  if (!existsSync(path)) throw new Error(`Instance not found: ${id}`);
+  if (!existsSync(path)) throw new OflowError('NOT_FOUND', `Instance not found: ${id}`);
   try {
     return normalizeInstance(JSON.parse(readFileSync(path, 'utf-8')) as WorkflowInstance);
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(`Instance file is corrupted: ${path}. ${cause}`);
+    throw new OflowError('INVALID_ARGUMENT', `Instance file is corrupted: ${path}. ${cause}`);
   }
 }
 
@@ -131,14 +132,14 @@ export function loadInstanceByAlias(alias: string, overrides: ConfigOverrides = 
 
 export function resolveInstance(idOrAlias: string, overrides: ConfigOverrides = {}): WorkflowInstance {
   if (isInstanceId(idOrAlias)) return loadInstance(idOrAlias, overrides);
-  return loadInstanceByAlias(idOrAlias, overrides) ?? (() => { throw new Error(`Instance not found: ${idOrAlias}`); })();
+  return loadInstanceByAlias(idOrAlias, overrides) ?? (() => { throw new OflowError('NOT_FOUND', `Instance not found: ${idOrAlias}`); })();
 }
 
 export function ensureAliasAvailable(alias: string, currentInstanceId?: string, overrides: ConfigOverrides = {}): void {
   assertAlias(alias);
   const existing = loadInstanceByAlias(alias, overrides);
   if (existing && existing.id !== currentInstanceId) {
-    throw new Error(`Alias already bound to instance ${existing.id}: ${alias}`);
+    throw new OflowError('CONFLICT', `Alias already bound to instance ${existing.id}: ${alias}`);
   }
 }
 

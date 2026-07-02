@@ -2,6 +2,7 @@ import type { ConfigOverrides } from '../config.js';
 import type { DashboardProgress, DashboardRisk, SuggestedAction, SuggestedActionRisk, WorkflowDashboardResult, WorkflowInstance, WorkflowStep, WorkflowTemplate } from '../types.js';
 import { queryEvents } from './event-log.js';
 import { inspectCheckpoint } from './checkpoint-inspector.js';
+import { OflowError } from './errors.js';
 import { summarizeInbox, listInboxEntries } from './inbox-store.js';
 import { renderPrompt } from './prompt-engine.js';
 import { listInstances, resolveInstance } from './instance-store.js';
@@ -19,7 +20,7 @@ export function buildDashboard(instanceIdOrAlias: string | undefined, options: D
   const instance = instanceIdOrAlias
     ? resolveInstance(instanceIdOrAlias, overrides)
     : listInstances({ status: 'active' }, overrides).instances[0];
-  if (!instance) throw new Error('No active workflow instance found');
+  if (!instance) throw new OflowError('NOT_FOUND', 'No active workflow instance found');
 
   const template = templateForInstance(instance);
   const step = findStep(template, instance.current_step);
@@ -61,7 +62,7 @@ function templateForInstance(instance: WorkflowInstance): WorkflowTemplate {
 
 function findStep(template: WorkflowTemplate, stepId: string): WorkflowStep {
   const step = template.steps.find(candidate => candidate.id === stepId);
-  if (!step) throw new Error(`Step not found in template ${template.name}: ${stepId}`);
+  if (!step) throw new OflowError('NOT_FOUND', `Step not found in template ${template.name}: ${stepId}`);
   return step;
 }
 

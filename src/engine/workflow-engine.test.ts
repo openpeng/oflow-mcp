@@ -78,8 +78,8 @@ test('validation failure does not mutate state', () => {
   try {
     createDemo(config);
     const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
-    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /Checkpoint validation failed/);
-    const current = getCurrent(started.instance.id, config);
+    assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
+    const current = getCurrent(started.instance.id, undefined, config);
     assert.equal(current.step.id, 'analyze');
     assert.equal(current.instance.steps.analyze.status, 'in_progress');
     assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
@@ -94,7 +94,7 @@ test('running instances use template and prompt snapshots after template deletio
     createDemo(config);
     const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
     rmSync(config.flowsDir, { recursive: true, force: true });
-    const current = getCurrent(started.instance.id, config);
+    const current = getCurrent(started.instance.id, undefined, config);
     assert.equal(current.step.id, 'analyze');
     assert.match(current.prompt, /feature/);
     const advanced = advanceWorkflow(started.instance.id, { analysis_summary: 'analysis is complete' }, {}, config);
@@ -124,7 +124,7 @@ test('advanceWorkflow blocks on missing required evidence and approval', () => {
       prompts: { verify: 'verify' },
     }, config);
     const started = startWorkflow('approval-demo', {}, undefined, config);
-    assert.throws(() => advanceWorkflow(started.instance.id, { summary: 'ok' }, {}, config), /Checkpoint validation failed/);
+    assert.throws(() => advanceWorkflow(started.instance.id, { summary: 'ok' }, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
     assert.equal(loadInstance(started.instance.id, config).steps.verify.status, 'in_progress');
     assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
 

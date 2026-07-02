@@ -1,5 +1,6 @@
 # Source-only / development files
-src/**/*.test.ts
+src/
+tsconfig.json
 dist/**/*.test.js
 coverage/
 .nyc_output/
