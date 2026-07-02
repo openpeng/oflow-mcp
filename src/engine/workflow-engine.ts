@@ -32,6 +32,7 @@ import {
   saveInstance,
 } from './instance-store.js';
 import { renderPrompt } from './prompt-engine.js';
+import { buildMemoryInjection } from './memory-lookup.js';
 
 export function startWorkflow(
   templateName: string,
@@ -71,7 +72,7 @@ export function startWorkflow(
   const saved = saveInstance(instance, overrides);
   recordEvent('workflow.started', saved.id, { template: templateName, alias }, undefined, overrides);
   recordEvent('step.started', saved.id, { step: firstStep.id }, firstStep.id, overrides);
-  return currentFromInstance(saved, overrides);
+  return currentFromInstance(saved, { include_memories: true }, overrides);
 }
 
 function resolveParams(defs: ParamsDef, params: Record<string, string>): Record<string, string> {
@@ -95,7 +96,7 @@ function resolveParams(defs: ParamsDef, params: Record<string, string>): Record<
   return resolved;
 }
 
-export function getCurrent(instanceIdOrAlias?: string, overrides: ConfigOverrides = {}): WorkflowCurrentResult {
+export function getCurrent(instanceIdOrAlias?: string, options?: { include_memories?: boolean }, overrides: ConfigOverrides = {}): WorkflowCurrentResult {
   let instance: WorkflowInstance | undefined;
   if (instanceIdOrAlias) {
     instance = resolveInstance(instanceIdOrAlias, overrides);
@@ -103,14 +104,20 @@ export function getCurrent(instanceIdOrAlias?: string, overrides: ConfigOverride
     instance = listInstances({ status: 'active' }, overrides).instances[0];
     if (!instance) throw new OflowError('NOT_FOUND', 'No active workflow instance found');
   }
-  return currentFromInstance(instance, overrides);
+  return currentFromInstance(instance, options, overrides);
 }
 
-function currentFromInstance(instance: WorkflowInstance, overrides: ConfigOverrides): WorkflowCurrentResult {
+function currentFromInstance(instance: WorkflowInstance, options?: { include_memories?: boolean }, overrides: ConfigOverrides = {}): WorkflowCurrentResult {
   const template = templateForInstance(instance, overrides);
   const step = findStep(template, instance.current_step);
   const promptText = instance.prompt_overrides[step.id] ?? promptForInstance(instance, step.id, overrides);
-  const prompt = renderPrompt(promptText, instance);
+  const rendered = renderPrompt(promptText, instance);
+  const includeMemories = options?.include_memories !== false; // default true
+
+  // Inject relevant memories at the top
+  const memoryInjection = includeMemories ? buildMemoryInjection(step.name) : '';
+  const prompt = memoryInjection ? memoryInjection + '\n' + rendered : rendered;
+
   return { instance, step, prompt };
 }
 

@@ -18,6 +18,7 @@ import {
   overridePrompt,
   startWorkflow,
 } from '../engine/workflow-engine.js';
+import { findRelevantMemories } from '../engine/memory-lookup.js';
 
 export const workflowTools: Tool[] = [
   {
@@ -49,10 +50,13 @@ export const workflowTools: Tool[] = [
   },
   {
     name: 'workflow_current',
-    description: 'Get the current workflow step and rendered prompt. ID may be an instance id or alias. If omitted, uses the most recently active instance.',
+    description: 'Get the current workflow step and rendered prompt. ID may be an instance id or alias. If omitted, uses the most recently active instance. By default, relevant project memories are injected into the prompt. Set include_memories=false to skip.',
     inputSchema: {
       type: 'object',
-      properties: { instance_id: { type: 'string', description: 'Instance ID or alias' } },
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias' },
+        include_memories: { type: 'boolean', description: 'Include memory summaries at the top of the prompt. Default true.' },
+      },
     },
   },
   {
@@ -233,6 +237,18 @@ export const workflowTools: Tool[] = [
       required: ['name'],
     },
   },
+  {
+    name: 'workflow_memory_recommend',
+    description: 'Recommend project memories relevant to a step name or query. Returns L2-level summaries (name + type + summary).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        step_name: { type: 'string', description: 'Step name or free-text keyword query' },
+        limit: { type: 'number', description: 'Max results, default 5' },
+      },
+      required: ['step_name'],
+    },
+  },
 ];
 
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
@@ -263,7 +279,7 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         });
       }
       case 'workflow_current': {
-        const result = getCurrent(optionalString(args, 'instance_id'));
+        const result = getCurrent(optionalString(args, 'instance_id'), { include_memories: args.include_memories !== false });
         return envelope({
           instance_id: result.instance.id,
           status: result.instance.status,
@@ -380,6 +396,19 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         const template = loadTemplate(name);
         const prompts = loadPromptSnapshots(template, name);
         return envelope(validateTemplateControlPlane(template, prompts));
+      }
+      case 'workflow_memory_recommend': {
+        const result = findRelevantMemories(requiredString(args, 'step_name'));
+        const limit = optionalNumber(args, 'limit') || 5;
+        return envelope({
+          query: requiredString(args, 'step_name'),
+          count: Math.min(result.length, limit),
+          memories: result.slice(0, limit).map(m => ({
+            name: m.name,
+            type: m.type,
+            summary: m.summary,
+          })),
+        });
       }
       default:
         return null;

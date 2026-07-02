@@ -17,6 +17,7 @@ test('tool list exposes workflow tools only', () => {
     'workflow_inbox_save',
     'workflow_list_instances',
     'workflow_list_templates',
+    'workflow_memory_recommend',
     'workflow_override_prompt',
     'workflow_start',
     'workflow_status',

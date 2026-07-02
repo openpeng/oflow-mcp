@@ -79,7 +79,7 @@ test('validation failure does not mutate state', () => {
     createDemo(config);
     const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
     assert.throws(() => advanceWorkflow(started.instance.id, {}, {}, config), /CHECKPOINT_VALIDATION_FAILED/);
-    const current = getCurrent(started.instance.id, config);
+    const current = getCurrent(started.instance.id, undefined, config);
     assert.equal(current.step.id, 'analyze');
     assert.equal(current.instance.steps.analyze.status, 'in_progress');
     assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
@@ -94,7 +94,7 @@ test('running instances use template and prompt snapshots after template deletio
     createDemo(config);
     const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
     rmSync(config.flowsDir, { recursive: true, force: true });
-    const current = getCurrent(started.instance.id, config);
+    const current = getCurrent(started.instance.id, undefined, config);
     assert.equal(current.step.id, 'analyze');
     assert.match(current.prompt, /feature/);
     const advanced = advanceWorkflow(started.instance.id, { analysis_summary: 'analysis is complete' }, {}, config);
