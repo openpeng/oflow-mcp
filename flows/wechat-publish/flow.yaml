@@ -1,0 +1,133 @@
+name: wechat-publish
+description: 微信公众号自动化提交流程 - 从本地文档到公众号发布
+params:
+  article_path:
+    type: string
+    required: true
+    description: 本地文档路径（Markdown文件）
+  wechat_appid:
+    type: string
+    required: true
+    description: 公众号AppID（建议通过环境变量 WX_APPID 传入）
+  wechat_appsecret:
+    type: string
+    required: true
+    description: 公众号AppSecret（建议通过环境变量 WX_APPSECRET 传入）
+  cover_image:
+    type: string
+    required: false
+    description: 封面图片路径（可选）
+  title:
+    type: string
+    required: false
+    description: 文章标题（可选，默认从文档提取）
+  author:
+    type: string
+    required: false
+    description: 文章作者（可选）
+  do_publish:
+    type: string
+    required: false
+    default: "false"
+    description: 是否直接发布（true/false，默认false只推送到草稿箱）
+token_budget:
+  total: 50000
+  per_step: 8000
+steps:
+  - id: prepare
+    name: 准备阶段
+    checkpoint:
+      required_outputs:
+        document_exists:
+          type: string
+          pattern: "^true$"
+          help: 确认文档文件存在
+        config_valid:
+          type: string
+          pattern: "^true$"
+          help: 确认公众号配置有效
+        article_title:
+          type: string
+          min_length: 5
+          help: 文章标题（从文档提取或使用指定标题）
+      conditions:
+        - natural: 文档文件存在且可读取
+          check: outputs.document_exists == 'true'
+          help: 确认 article_path 指向的文件存在且有读取权限
+        - natural: 公众号配置完整
+          check: outputs.config_valid == 'true'
+          help: 确认 AppID 和 AppSecret 已配置
+    next: convert
+  - id: convert
+    name: 转换阶段
+    checkpoint:
+      required_outputs:
+        html_content:
+          type: string
+          min_length: 100
+          help: Markdown转换后的HTML内容
+        cover_media_id:
+          type: string
+          help: 封面图上传后的media_id（无封面则为空字符串）
+      optional_outputs:
+        content_images:
+          type: string
+          help: 正文图片的media_id列表（JSON格式）
+      conditions:
+        - natural: HTML内容已生成且长度足够
+          check: outputs.html_content != null AND len(outputs.html_content) > 100
+          help: 确认 Markdown 已成功转换为适合微信的 HTML
+    next: draft
+  - id: draft
+    name: 推送草稿箱
+    checkpoint:
+      required_outputs:
+        draft_id:
+          type: string
+          min_length: 10
+          help: 草稿箱创建成功返回的draft_id
+        create_time:
+          type: string
+          help: 草稿创建时间戳
+      conditions:
+        - natural: 草稿创建成功
+          check: outputs.draft_id != null AND len(outputs.draft_id) > 10
+          help: 确认文章已成功推送到微信公众号草稿箱
+    next:
+      pass: publish
+      fail: archive
+  - id: publish
+    name: 正式发布
+    checkpoint:
+      required_outputs:
+        publish_id:
+          type: string
+          min_length: 5
+          help: 发布成功返回的publish_id
+        article_url:
+          type: string
+          help: 发布后文章的访问URL
+        publish_time:
+          type: string
+          help: 正式发布时间戳
+      conditions:
+        - natural: 文章发布成功
+          check: outputs.publish_id != null AND outputs.article_url != null
+          help: 确认文章已成功发布到公众号
+    next: archive
+  - id: archive
+    name: 归档阶段
+    checkpoint:
+      required_outputs:
+        archive_path:
+          type: string
+          help: 归档文件保存路径
+        summary:
+          type: string
+          min_length: 20
+          help: 本次发布流程的汇总信息
+      conditions:
+        - natural: 归档完成
+          check: outputs.archive_path != null AND len(outputs.summary) > 20
+          help: 确认发布结果已归档保存
+    next: null
