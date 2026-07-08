@@ -57,7 +57,22 @@ function checkUnreachable(template: WorkflowTemplate, errors: ValidationIssue[])
 function nextSteps(step: WorkflowStep): string[] {
   if (step.next === null) return [];
   if (typeof step.next === 'string') return [step.next];
-  return Object.values(step.next);
+
+  const obj = step.next as Record<string, unknown>;
+  const ids: string[] = [];
+
+  if ('branches' in obj && Array.isArray(obj.branches)) {
+    for (const branch of obj.branches as Array<{ step?: string }>) {
+      if (typeof branch.step === 'string') ids.push(branch.step);
+    }
+  }
+  if (typeof obj.fallback === 'string') ids.push(obj.fallback);
+
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && !ids.includes(v)) ids.push(v);
+  }
+
+  return ids;
 }
 
 function checkUnusedPrompts(stepIds: Set<string>, prompts: Record<string, string>, warnings: ValidationIssue[]): void {

@@ -227,10 +227,27 @@ function checkpointFailureDetails(errors: CheckpointValidationError[]) {
 
 function resolveNextStep(step: WorkflowStep, conditionResult?: string): string | null {
   if (step.next === null || typeof step.next === 'string') return step.next;
+
+  const obj = step.next as Record<string, unknown>;
+
+  if ('branches' in obj && Array.isArray(obj.branches)) {
+    for (const branch of obj.branches as Array<{ condition?: string; step?: string }>) {
+      if (typeof branch.condition === 'string' && typeof branch.step === 'string') {
+        try {
+          if (new RegExp(branch.condition).test(conditionResult ?? '')) {
+            return branch.step;
+          }
+        } catch { /* skip invalid regex */ }
+      }
+    }
+    if (typeof obj.fallback === 'string') return obj.fallback;
+    throw new OflowError('INVALID_ARGUMENT', `No branch matched condition_result "${conditionResult}" for step ${step.id}, and no fallback defined`);
+  }
+
   const key = conditionResult ?? 'pass';
-  const next = step.next[key];
+  const next = obj[key];
   if (!next) throw new OflowError('INVALID_ARGUMENT', `No branch matched condition_result "${key}" for step ${step.id}`);
-  return next;
+  return next as string;
 }
 
 export function getWorkflowStatus(instanceIdOrAlias: string, overrides: ConfigOverrides = {}): { instance: WorkflowInstance; template: WorkflowTemplate; steps: WorkflowStep[] } {

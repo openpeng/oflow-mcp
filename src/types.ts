@@ -45,11 +45,16 @@ export interface CheckpointDef {
   conditions?: Condition[];
 }
 
+export interface BranchDef {
+  condition: string;
+  step: string;
+}
+
 export interface WorkflowStep {
   id: string;
   name: string;
   checkpoint?: CheckpointDef;
-  next: string | null | Record<string, string>;
+  next: string | null | Record<string, string> | { branches: BranchDef[]; fallback: string };
 }
 
 export interface TokenBudget {
@@ -65,6 +70,8 @@ export interface WorkflowTemplate {
   token_budget?: TokenBudget;
   /** Phase 8: 模板路由元数据 — AI 自动发现和匹配模板 */
   routing?: TemplateRouting;
+  /** URL 模式匹配（可选） */
+  url_patterns?: string[];
 }
 
 /** Phase 8: 模板路由元数据 */
@@ -77,6 +84,13 @@ export interface TemplateRouting {
   triggers?: string[];
   /** 优先级（数值越大越优先） */
   priority: number;
+}
+
+/** URL 匹配结果 */
+export interface UrlMatchResult {
+  template: string;
+  description: string;
+  params: Record<string, string>;
 }
 
 /** Phase 8: 模板路由匹配结果 */

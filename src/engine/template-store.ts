@@ -11,6 +11,7 @@ import type {
   TemplateSummary,
   TemplateRouteMatch,
   TemplateRouting,
+  UrlMatchResult,
   WorkflowStep,
   WorkflowTemplate,
 } from '../types.js';
@@ -165,23 +166,35 @@ function validateStepShape(templateName: string, step: WorkflowStep): void {
   }
 }
 
+function extractNextStepIds(next: unknown): string[] {
+  if (typeof next === 'string') return [next];
+  if (next === null || next === undefined) return [];
+  if (typeof next !== 'object') return [];
+
+  const obj = next as Record<string, unknown>;
+  const ids: string[] = [];
+
+  if ('branches' in obj && Array.isArray(obj.branches)) {
+    for (const branch of obj.branches as Array<{ step?: string }>) {
+      if (typeof branch.step === 'string') ids.push(branch.step);
+    }
+  }
+  if (typeof obj.fallback === 'string') ids.push(obj.fallback);
+
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && !ids.includes(v)) ids.push(v);
+  }
+
+  return ids;
+}
+
 function validateNext(templateName: string, step: WorkflowStep, stepIds: Set<string>): void {
-  if (step.next === null) return;
-  if (typeof step.next === 'string') {
-    if (!stepIds.has(step.next)) {
-      throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} next points to missing step: ${step.next}`);
+  const nexts = extractNextStepIds(step.next);
+  for (const next of nexts) {
+    if (!stepIds.has(next)) {
+      throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} next points to missing step: ${next}`);
     }
-    return;
   }
-  if (typeof step.next === 'object') {
-    for (const [branch, target] of Object.entries(step.next)) {
-      if (!stepIds.has(target)) {
-        throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} branch ${branch} points to missing step: ${target}`);
-      }
-    }
-    return;
-  }
-  throw new OflowError('INVALID_ARGUMENT', `Template ${templateName} step ${step.id} has invalid next`);
 }
 
 export function createTemplate(options: CreateTemplateOptions, overrides: ConfigOverrides = {}): { path: string } {
@@ -325,4 +338,63 @@ export function listTemplatesWithRouting(query?: string, overrides: ConfigOverri
     }));
   }
   return matchTemplatesByIntent(query, overrides);
+}
+
+function globToRegex(pattern: string): RegExp {
+  let src = '';
+  let i = 0;
+  while (i < pattern.length) {
+    if (pattern[i] === '*' && pattern[i + 1] === '*') {
+      src += '.*';
+      i += 2;
+    } else if (pattern[i] === '*') {
+      src += '[^/]*';
+      i += 1;
+    } else if ('.+?^${}()|[]\\'.includes(pattern[i])) {
+      src += '\\' + pattern[i];
+      i += 1;
+    } else {
+      src += pattern[i];
+      i += 1;
+    }
+  }
+  return new RegExp('^' + src + '$', 'i');
+}
+
+export function matchTemplatesByUrl(url: string, overrides: ConfigOverrides = {}): UrlMatchResult[] {
+  const results: UrlMatchResult[] = [];
+
+  for (const summary of listTemplates(overrides)) {
+    if (summary.invalid) continue;
+    try {
+      const tmpl = loadTemplate(summary.name, overrides);
+      const patterns = tmpl.url_patterns;
+      if (!patterns || patterns.length === 0) continue;
+
+      for (const pattern of patterns) {
+        const re = globToRegex(pattern);
+        if (re.test(url)) {
+          const params: Record<string, string> = {};
+          if (tmpl.params && typeof tmpl.params === 'object' && !Array.isArray(tmpl.params)) {
+            const paramDefs = tmpl.params as Record<string, { type: string; required: boolean }>;
+            for (const [key] of Object.entries(paramDefs)) {
+              if (key.includes('url') || key.includes('_url')) {
+                params[key] = url;
+              }
+            }
+          }
+          results.push({
+            template: summary.name,
+            description: tmpl.description,
+            params,
+          });
+          break;
+        }
+      }
+    } catch {
+      // skip templates that fail to load
+    }
+  }
+
+  return results;
 }
