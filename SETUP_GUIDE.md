@@ -57,7 +57,7 @@ uname -s                    # macOS / Linux
 ```powershell
 # Windows (PowerShell)
 cd <WORKSPACE>              # 切换到用户指定的或默认的工作目录
-git clone https://gitee.com/<OWNER>/oflow-mcp.git   # 或 GitHub 地址
+git clone https://github.com/openpeng/oflow-mcp.git   # 或 GitHub 地址
 cd oflow-mcp
 npm install
 npm run build
@@ -67,7 +67,7 @@ npm link                    # 注册全局命令
 ```bash
 # macOS / Linux (Bash)
 cd <WORKSPACE>
-git clone https://gitee.com/<OWNER>/oflow-mcp.git
+git clone https://github.com/openpeng/oflow-mcp.git
 cd oflow-mcp
 npm install
 npm run build
