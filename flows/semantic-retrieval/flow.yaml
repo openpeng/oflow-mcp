@@ -1,0 +1,478 @@
+name: semantic-retrieval
+description: 本地语义检索工作流 -- 使用 sqlite-vec 进行本地向量存储和检索，支持文本切分、向量化、相似度检测和数据存储
+routing:
+  keywords: ["语义检索", "向量检索", "向量数据库", "向量化", "相似度", "sqlite-vec"]
+  description_short: "本地语义检索（环境检查→建表→切分→向量化→相似度检测→存储）"
+  triggers:
+    - "(语义|向量).*检索"
+    - "(向量|向量化).*(存储|数据库)"
+    - "sqlite.*vec"
+  priority: 6
+
+params:
+  file_identifier:
+    type: string
+    required: true
+    description: 文件标识符，用于标识存储的文本数据
+  text_content:
+    type: string
+    required: true
+    description: 要处理的原始文本内容
+  split_length:
+    type: number
+    required: true
+    description: 文本切分的目标长度（字数）
+
+global_context: |
+  # 本地语义检索全局约束
+  - 使用 sqlite-vec 进行本地向量存储，数据库文件位于工作流实例目录下
+  - 表名使用当前工作流实例的 ID
+  - 向量化接口：https://ai.gitee.com/v1/embeddings，模型 Qwen3-Embedding-8B，维度 1024
+  - 文本切分按字数进行，浮动到下一个换行处；最后一段长度低于60%则合并到上一段
+  - 存储前必须检查相似度，高相似度内容不存储，需提示用户修改
+
+token_budget:
+  total: 80000
+  per_step: 15000
+
+steps:
+  - id: check_env
+    name: 检查环境
+    description: 检查 sqlite-vec 是否安装，未安装则进行安装
+    checkpoint:
+      required_outputs:
+        sqlite_vec_installed:
+          type: boolean
+          help: sqlite-vec 是否已安装
+        install_result:
+          type: string
+          min_length: 5
+          help: 安装结果描述
+      conditions:
+        - natural: sqlite-vec 已安装
+          check: outputs.sqlite_vec_installed != null
+          help: 请检查并安装 sqlite-vec
+    next: create_table
+    prompt: |
+      ## 当前任务
+
+      检查并安装 sqlite-vec Python 包。
+
+      ## 执行步骤
+
+      1. **检查 sqlite-vec 是否已安装**：
+         ```bash
+         pip show sqlite-vec
+         ```
+
+      2. **如果未安装，执行安装**：
+         ```bash
+         pip install sqlite-vec
+         ```
+
+      3. **验证安装结果**：
+         ```bash
+         python -c "import sqlite_vec; print('sqlite-vec installed successfully')"
+         ```
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **sqlite_vec_installed**：`true` 表示已安装，`false` 表示安装失败
+      - **install_result**：安装过程的结果描述
+
+  - id: create_table
+    name: 创建向量表
+    description: 创建 SQLite 向量表，表名为当前工作流实例 ID，如果已存在则跳过
+    checkpoint:
+      required_outputs:
+        table_created:
+          type: boolean
+          help: 表是否已创建（包括已存在的情况）
+        table_name:
+          type: string
+          min_length: 1
+          help: 创建的表名
+      conditions:
+        - natural: 向量表已就绪
+          check: outputs.table_created != null AND len(outputs.table_name) > 0
+          help: 请创建向量表或确认表已存在
+    next: confirm_params
+    prompt: |
+      ## 当前任务
+
+      创建 SQLite 向量表，表结构包含：
+      - id: 主键自增
+      - file_identifier: 文件名/标识符
+      - original_content: 原始文本内容
+      - vector: 向量内容（BLOB 类型）
+      - metadata: 其他备注信息（JSON 类型）
+      - created_at: 创建时间
+
+      ## 上下文
+
+      - 表名：使用当前工作流实例的 ID（`{{instance.id}}`）
+      - 数据库文件：存储在工作流数据目录下
+
+      ## 执行步骤
+
+      1. **连接 SQLite 数据库**：
+         ```python
+         import sqlite3
+         import sqlite_vec
+         
+         conn = sqlite3.connect('semantic_retrieval.db')
+         conn.enable_load_extension(True)
+         sqlite_vec.load(conn)
+         conn.enable_load_extension(False)
+         ```
+
+      2. **检查表是否存在**：
+         ```sql
+         SELECT name FROM sqlite_master WHERE type='table' AND name='{{instance.id}}';
+         ```
+
+      3. **如果不存在则创建表**：
+         ```sql
+         CREATE TABLE IF NOT EXISTS {{instance.id}} (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             file_identifier TEXT NOT NULL,
+             original_content TEXT NOT NULL,
+             vector BLOB NOT NULL,
+             metadata JSON,
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+         );
+         
+         CREATE INDEX IF NOT EXISTS idx_{{instance.id}}_identifier ON {{instance.id}}(file_identifier);
+         ```
+
+      4. **创建向量索引**：
+         ```sql
+         INSERT INTO sqlite_vec_index (name, tbl, col, dim, metric)
+         VALUES ('idx_{{instance.id}}_vector', '{{instance.id}}', 'vector', 1024, 'cosine')
+         ON CONFLICT(name) DO NOTHING;
+         ```
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **table_created**：`true` 表示表已创建或已存在
+      - **table_name**：实际使用的表名
+
+  - id: confirm_params
+    name: 确认参数
+    description: 确认用户提供的参数，检查是否存在相同标识符的记录并清理
+    checkpoint:
+      required_outputs:
+        file_identifier:
+          type: string
+          min_length: 1
+          help: 用户提供的文件标识符
+        split_length:
+          type: number
+          help: 用户提供的切分长度
+        existing_records_deleted:
+          type: boolean
+          help: 是否删除了相同标识符的已有记录
+        deleted_count:
+          type: number
+          help: 删除的记录数量
+      conditions:
+        - natural: 参数已确认且重复记录已清理
+          check: outputs.file_identifier != null AND outputs.existing_records_deleted != null
+          help: 请确认参数并清理重复记录
+    next: split_text
+    prompt: |
+      ## 当前任务
+
+      确认用户提供的参数，并清理表中相同标识符的已有记录。
+
+      ## 上下文
+
+      - 文件标识符：`{{params.file_identifier}}`
+      - 切分长度：`{{params.split_length}}`
+      - 表名：`{{steps.create_table.outputs.table_name}}`
+
+      ## 执行步骤
+
+      1. **确认参数有效性**：
+         - file_identifier 不能为空
+         - split_length 必须是大于 0 的整数
+
+      2. **检查并清理相同标识符的记录**：
+         ```sql
+         DELETE FROM {{steps.create_table.outputs.table_name}} 
+         WHERE file_identifier = '{{params.file_identifier}}';
+         ```
+
+      3. **记录删除的行数**
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **file_identifier**：确认后的文件标识符
+      - **split_length**：确认后的切分长度
+      - **existing_records_deleted**：`true` 表示已执行清理操作
+      - **deleted_count**：删除的记录数量（0 表示没有重复记录）
+
+  - id: split_text
+    name: 切分文本
+    description: 按照用户指定的长度切分文本，按字数切到下一个换行处，最后一段长度不足60%则合并到上一段
+    checkpoint:
+      required_outputs:
+        text_chunks:
+          type: array
+          min_length: 1
+          help: 切分后的文本片段数组
+        chunk_count:
+          type: number
+          help: 切分后的片段数量
+      conditions:
+        - natural: 文本已成功切分
+          check: outputs.text_chunks != null AND len(outputs.text_chunks) > 0
+          help: 请执行文本切分
+    next: vectorize
+    prompt: |
+      ## 当前任务
+
+      切分用户提供的文本内容。
+
+      ## 上下文
+
+      - 原始文本：`{{params.text_content}}`
+      - 切分长度：`{{steps.confirm_params.outputs.split_length}}`
+
+      ## 切分规则
+
+      1. **按字数切分**：以指定长度为目标，找到该位置附近的换行符进行切分
+      2. **浮动到下一个换行**：从目标长度位置向后查找，找到第一个换行符作为切分点
+      3. **最后一段处理**：如果最后一段长度小于目标长度的 60%，将其合并到上一段
+
+      ## 执行步骤
+
+      1. **初始化变量**：
+         - target_length = {{steps.confirm_params.outputs.split_length}}
+         - chunks = []
+         - current_position = 0
+
+      2. **循环切分**：
+         - 从 current_position 开始，找到 current_position + target_length 位置
+         - 从该位置向后查找第一个换行符（\n）
+         - 如果找到换行符，以换行为界切分；否则在目标位置切分
+         - 将切分后的片段加入 chunks
+         - 更新 current_position
+
+      3. **处理最后一段**：
+         - 检查最后一段长度
+         - 如果长度 < target_length * 0.6，合并到上一段
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **text_chunks**：切分后的文本片段数组
+      - **chunk_count**：片段数量
+
+  - id: vectorize
+    name: 向量化文本
+    description: 使用 Gitee AI 接口将文本片段转换为向量
+    checkpoint:
+      required_outputs:
+        vectors:
+          type: array
+          min_length: 1
+          help: 文本片段对应的向量数组
+        vector_count:
+          type: number
+          help: 向量数量
+        api_calls:
+          type: number
+          help: API 调用次数
+      conditions:
+        - natural: 文本已成功向量化
+          check: outputs.vectors != null AND len(outputs.vectors) > 0
+          help: 请调用向量化接口获取向量
+    next: check_similarity
+    prompt: |
+      ## 当前任务
+
+      使用 Gitee AI Embeddings 接口将文本片段转换为向量。
+
+      ## 上下文
+
+      - 文本片段：`{{steps.split_text.outputs.text_chunks}}`
+
+      ## API 信息
+
+      - URL: https://ai.gitee.com/v1/embeddings
+      - Method: POST
+      - Headers:
+        - Content-Type: application/json
+        - X-Failover-Enabled: true
+        - Authorization: Bearer <YOUR_API_KEY>
+      - Body:
+        ```json
+        {
+          "input": "<文本内容>",
+          "model": "Qwen3-Embedding-8B",
+          "dimensions": 1024,
+          "instruction": "<文本内容>"
+        }
+        ```
+
+      ## 执行步骤
+
+      1. **遍历文本片段**：
+         - 对每个文本片段调用 API
+         - 将 instruction 替换为具体的文本内容
+
+      2. **处理响应**：
+         - 从响应中提取 embedding 向量
+         - 将向量转换为 BLOB 格式（bytes）
+
+      3. **记录 API 调用次数**
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **vectors**：向量数组（每个元素是 BLOB 格式的向量）
+      - **vector_count**：向量数量
+      - **api_calls**：API 调用次数
+
+  - id: check_similarity
+    name: 检查相似度
+    description: 检查新向量与已有向量的相似度，如果存在高相似度内容则提示用户修改
+    checkpoint:
+      required_outputs:
+        high_similarity_found:
+          type: boolean
+          help: 是否发现高相似度内容
+        similarity_results:
+          type: array
+          help: 相似度检查结果
+        can_store:
+          type: boolean
+          help: 是否可以存储（无高相似度）
+      conditions:
+        - natural: 相似度检查已完成
+          check: outputs.high_similarity_found != null AND outputs.can_store != null
+          help: 请完成相似度检查
+    next: store_data
+    prompt: |
+      ## 当前任务
+
+      检查新生成的向量与表中已有向量的相似度。
+
+      ## 上下文
+
+      - 新向量：`{{steps.vectorize.outputs.vectors}}`
+      - 表名：`{{steps.create_table.outputs.table_name}}`
+      - 文件标识符：`{{steps.confirm_params.outputs.file_identifier}}`
+
+      ## 相似度检查规则
+
+      1. **阈值设定**：余弦相似度 >= 0.85 视为高相似度
+      2. **检查方式**：对每个新向量进行向量检索，查找最相似的已有向量
+      3. **处理策略**：
+         - 如果发现任何一个高相似度结果，标记为 high_similarity_found = true
+         - 高相似度时，记录相似内容信息，不存储数据
+         - 低相似度时，允许存储
+
+      ## 执行步骤
+
+      1. **对每个新向量执行相似度检索**：
+         ```sql
+         SELECT 
+             file_identifier, 
+             original_content, 
+             distance
+         FROM {{steps.create_table.outputs.table_name}}
+         WHERE vector MATCH '<新向量>' 
+           AND file_identifier != '{{steps.confirm_params.outputs.file_identifier}}'
+         ORDER BY distance ASC
+         LIMIT 3;
+         ```
+
+      2. **判断相似度**：
+         - 检查返回结果的 distance 值
+         - 余弦相似度 = 1 - distance
+         - 如果相似度 >= 0.85，记录为高相似度
+
+      3. **汇总结果**：
+         - 如果有任何高相似度，设置 high_similarity_found = true
+         - 记录所有相似度结果供用户参考
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **high_similarity_found**：`true` 表示发现高相似度内容
+      - **similarity_results**：相似度检查结果数组，包含相似内容和相似度
+      - **can_store**：`true` 表示可以存储（无高相似度）
+
+  - id: store_data
+    name: 存储数据
+    description: 如果没有高相似度内容，将文本片段和向量写入表中；如果有高相似度，提示用户修改
+    checkpoint:
+      required_outputs:
+        stored:
+          type: boolean
+          help: 是否成功存储
+        stored_count:
+          type: number
+          help: 存储的记录数量
+        message:
+          type: string
+          min_length: 5
+          help: 存储结果消息
+      conditions:
+        - natural: 存储操作已完成
+          check: outputs.stored != null AND len(outputs.message) > 0
+          help: 请完成存储操作
+    next: null
+    prompt: |
+      ## 当前任务
+
+      根据相似度检查结果决定是否存储数据。
+
+      ## 上下文
+
+      - 高相似度发现：`{{steps.check_similarity.outputs.high_similarity_found}}`
+      - 文本片段：`{{steps.split_text.outputs.text_chunks}}`
+      - 向量：`{{steps.vectorize.outputs.vectors}}`
+      - 表名：`{{steps.create_table.outputs.table_name}}`
+      - 文件标识符：`{{steps.confirm_params.outputs.file_identifier}}`
+
+      ## 执行步骤
+
+      1. **检查是否可以存储**：
+         - 如果 `{{steps.check_similarity.outputs.can_store}}` = false：
+           - 不执行存储操作
+           - 设置 stored = false
+           - 生成提示消息，告知用户存在重复内容，需要修改
+
+         - 如果 `{{steps.check_similarity.outputs.can_store}}` = true：
+           - 遍历文本片段和向量，逐条插入表中
+           - ```sql
+             INSERT INTO {{steps.create_table.outputs.table_name}} 
+             (file_identifier, original_content, vector, metadata)
+             VALUES ('{{steps.confirm_params.outputs.file_identifier}}', '<内容>', <向量BLOB>, '{}');
+             ```
+           - 设置 stored = true
+           - 记录存储的数量
+
+      2. **生成结果消息**：
+         - 如果存储成功，提供成功消息和存储数量
+         - 如果未存储，提供高相似度内容的详细信息，提示用户修改
+
+      ## 产出物
+
+      调用 `workflow_advance` 时提供：
+
+      - **stored**：`true` 表示存储成功，`false` 表示未存储
+      - **stored_count**：存储的记录数量（未存储时为 0）
+      - **message**：存储结果消息，包含成功或失败的详细信息
