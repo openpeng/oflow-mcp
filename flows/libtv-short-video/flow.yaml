@@ -1,0 +1,418 @@
+name: libtv-short-video
+description: >-
+  公众号文章转 LibTV 爆款短视频工作流 —— 输入公众号文章 URL 或本地 Markdown，
+  自动提取内容、生成口播脚本、分镜、封面、配音与背景音乐方案，最终输出 LibTV 画布可直接导入的素材包。
+routing:
+  keywords:
+    - 短视频
+    - 视频
+    - LibTV
+    - libtv
+    - 公众号转视频
+    - 文章转视频
+    - 爆款视频
+    - Seedance
+    - 口播脚本
+    - 分镜
+  description_short: "公众号文章转 LibTV 爆款短视频（提取→脚本→分镜→封面→配音→配乐→出片）"
+  triggers:
+    - "(公众号|文章|Markdown|微信).*转.*(视频|短视频|LibTV)"
+    - "(LibTV|libtv|Seedance).*公众号.*视频"
+    - "生成.*(短视频|口播|分镜|封面|视频脚本)"
+    - "公众号.*爆款.*视频"
+  priority: 7
+
+params:
+  article_source:
+    type: string
+    required: true
+    description: 公众号文章 URL 或本地 Markdown 文件绝对路径
+  output_dir:
+    type: string
+    required: false
+    default: ""
+    description: 素材包输出目录，默认使用当前工作目录下的 libtv-output/<timestamp>/
+  aspect_ratio:
+    type: string
+    required: false
+    default: "9:16"
+    pattern: "^(9:16|16:9|1:1|3:4|4:3)$"
+    description: 视频画幅，可选 9:16 / 16:9 / 1:1 / 3:4 / 4:3，默认竖屏 9:16
+  duration:
+    type: string
+    required: false
+    default: "60"
+    pattern: "^[0-9]+$"
+    description: 目标时长（秒），默认 60 秒
+  style:
+    type: string
+    required: false
+    default: ""
+    description: 视频风格，如“知识口播、新中式、皮克斯动画、无厘头喜剧、武侠电影、TVC广告”等，留空则由 Agent 根据文章内容匹配
+  voice_type:
+    type: string
+    required: false
+    default: ""
+    description: 配音音色描述，如“沉稳男声、温柔女声、活力年轻声”，留空则自动匹配
+  subtitle_style:
+    type: string
+    required: false
+    default: ""
+    description: 字幕样式偏好，如“大字幕、关键词高亮、居中对齐”，留空则自动匹配
+  music_mood:
+    type: string
+    required: false
+    default: ""
+    description: 背景音乐情绪，如“轻快、悬疑、温情、史诗”，留空则自动匹配
+
+global_context: |
+  # LibTV 短视频工作流全局约束
+
+  - 本工作流不直接渲染最终视频，而是生成 LibTV / Seedance 可消费的「素材包 + 画布元数据」。
+  - 必须优先复用公众号原文中的图片素材，保证内容真实感；缺失或质量不足时再生成新图。
+  - 所有生成的提示词、脚本、分镜、封面、配音、配乐方案必须保存到输出目录，保证可复现。
+  - 口播脚本必须适配目标时长 `{{duration}}` 秒，语速按每分钟 220-260 字控制。
+  - 画幅统一使用 `{{aspect_ratio}}`，分镜与封面必须标注对应比例。
+  - 风格、配音、字幕、音乐未指定时，由 Agent 根据文章主题与爆款短视频要素自动推导，并在输出中说明选择理由。
+  - 子 Agent 拥有最小但完整的工具集：search、general_purpose_task、kimi-webbridge 以及必要的 Skill。
+  - 调用 `workflow_advance` 时必须携带该步骤所有 required_outputs 与 confirmed_conditions。
+
+token_budget:
+  total: 120000
+  per_step: 20000
+
+optimization:
+  mode: off
+
+steps:
+  - id: prepare
+    name: 准备与提取
+    description: 校验输入，下载或读取公众号文章，收集正文与图片素材，确定输出目录
+    execution: delegate
+    tools:
+      - search
+      - general_purpose_task
+      - kimi-webbridge
+      - name: canghe-wechat-article-extractor
+        type: skill
+    agent:
+      model: gpt-4o
+      temperature: 0.4
+    checkpoint:
+      required_outputs:
+        article_title:
+          type: string
+          min_length: 2
+          help: 文章标题
+        article_author:
+          type: string
+          help: 文章作者，无法识别则为空字符串
+        article_url:
+          type: string
+          help: 原文 URL，本地文件则记录本地路径
+        markdown_path:
+          type: string
+          min_length: 5
+          help: 本地 Markdown 文件绝对路径
+        image_paths:
+          type: string
+          help: 文章图片路径列表（JSON 数组字符串），无图片则为空数组
+        output_dir:
+          type: string
+          min_length: 5
+          help: 素材包输出目录绝对路径
+        content_preview:
+          type: string
+          min_length: 50
+          help: 正文前 500 字以内的预览
+      conditions:
+        - natural: 已成功读取或下载文章
+          check: outputs.markdown_path != null AND len(outputs.markdown_path) > 5
+          help: 确认 Markdown 文件存在且可读取
+        - natural: 已确定输出目录
+          check: outputs.output_dir != null AND len(outputs.output_dir) > 5
+          help: 确认输出目录已创建
+        - natural: 文章内容非空
+          check: outputs.content_preview != null AND len(outputs.content_preview) > 50
+          help: 确认文章正文已成功提取
+    next: analyze
+
+  - id: analyze
+    name: 内容分析
+    description: 分析文章结构、提炼 3-5 个核心看点、识别适合短视频的钩子与情绪节奏
+    execution: delegate
+    tools:
+      - search
+      - general_purpose_task
+    agent:
+      model: gpt-4o
+      temperature: 0.6
+    checkpoint:
+      required_outputs:
+        core_points:
+          type: string
+          min_length: 50
+          help: 3-5 个核心看点，每点含「要点 + 为什么适合做短视频」
+        target_audience:
+          type: string
+          min_length: 5
+          help: 目标受众一句话描述
+        emotional_hook:
+          type: string
+          min_length: 10
+          help: 最能勾起用户看完的钩子（情绪或冲突点）
+        visual_assets:
+          type: string
+          help: 可复用或需生成的视觉素材清单（JSON）
+        recommended_style:
+          type: string
+          min_length: 2
+          help: 推荐的 LibTV 风格/Skill
+        article_summary:
+          type: string
+          min_length: 50
+          help: 文章摘要，用于后续脚本生成
+      conditions:
+        - natural: 已提炼核心看点
+          check: outputs.core_points != null AND len(outputs.core_points) > 50
+          help: 确认核心看点已产出
+        - natural: 已确定目标受众与情绪钩子
+          check: outputs.target_audience != null AND outputs.emotional_hook != null
+          help: 确认受众与钩子已明确
+        - natural: 已推荐视频风格
+          check: outputs.recommended_style != null AND len(outputs.recommended_style) > 2
+          help: 确认风格推荐已产出
+    next: script
+
+  - id: script
+    name: 口播脚本
+    description: 基于分析结果生成适配目标时长的爆款口播脚本，含开场钩子、正文节奏、结尾引导
+    execution: delegate
+    tools:
+      - general_purpose_task
+    agent:
+      model: gpt-4o
+      temperature: 0.75
+    checkpoint:
+      required_outputs:
+        script_text:
+          type: string
+          min_length: 100
+          help: 完整口播文案
+        word_count:
+          type: number
+          help: 脚本字数
+        estimated_duration:
+          type: number
+          help: 估算时长（秒）
+        hook:
+          type: string
+          min_length: 5
+          help: 前 3 秒钩子文案
+        cta:
+          type: string
+          min_length: 5
+          help: 结尾引导文案
+        script_path:
+          type: string
+          min_length: 5
+          help: 脚本保存的绝对路径
+      conditions:
+        - natural: 口播脚本已生成并保存
+          check: outputs.script_text != null AND len(outputs.script_text) > 100 AND outputs.script_path != null
+          help: 确认脚本内容非空且已落盘
+        - natural: 估算时长符合目标
+          check: outputs.estimated_duration != null AND abs(outputs.estimated_duration - {{duration}}) <= 15
+          help: 估算时长与目标时长相差不超过 15 秒
+    next: storyboard
+
+  - id: storyboard
+    name: 分镜设计
+    description: 将脚本拆分为带时间码的分镜，决定每镜复用原文图片还是生成新图，输出 LibTV 可用分镜表
+    execution: delegate
+    tools:
+      - search
+      - general_purpose_task
+      - name: guizang-material-illustration
+        type: skill
+      - name: imagegen
+        type: skill
+    agent:
+      model: gpt-4o
+      temperature: 0.7
+    checkpoint:
+      required_outputs:
+        storyboard:
+          type: string
+          min_length: 200
+          help: 分镜表 JSON 字符串，每镜含 time_start/time_end/shot_type/narration/visual_prompt/source_image/generated_image
+        shot_count:
+          type: number
+          help: 分镜总数
+        reused_images:
+          type: string
+          help: 复用原文图片清单（JSON 数组）
+        generated_images:
+          type: string
+          help: 新生成图片清单（JSON 数组）
+        storyboard_path:
+          type: string
+          min_length: 5
+          help: 分镜表保存的绝对路径
+      conditions:
+        - natural: 分镜表已生成并保存
+          check: outputs.storyboard != null AND len(outputs.storyboard) > 200 AND outputs.storyboard_path != null
+          help: 确认分镜表非空且已落盘
+        - natural: 分镜总数合理
+          check: outputs.shot_count != null AND outputs.shot_count >= 3
+          help: 至少包含 3 个分镜
+    next: cover
+
+  - id: cover
+    name: 爆款封面
+    description: 提炼爆款封面要素，生成封面图片提示词并产出封面图
+    execution: delegate
+    tools:
+      - general_purpose_task
+      - name: guizang-material-illustration
+        type: skill
+      - name: imagegen
+        type: skill
+    agent:
+      model: gpt-4o
+      temperature: 0.75
+    checkpoint:
+      required_outputs:
+        cover_prompt:
+          type: string
+          min_length: 50
+          help: 封面图生成提示词
+        cover_path:
+          type: string
+          min_length: 5
+          help: 封面图保存的绝对路径
+        cover_title:
+          type: string
+          min_length: 2
+          help: 封面上要呈现的主标题文案
+        cover_subtitle:
+          type: string
+          help: 封面副标题文案
+      conditions:
+        - natural: 封面提示词已生成
+          check: outputs.cover_prompt != null AND len(outputs.cover_prompt) > 50
+          help: 确认封面提示词已产出
+        - natural: 封面图已保存
+          check: outputs.cover_path != null AND len(outputs.cover_path) > 5
+          help: 确认封面图已落盘
+    next: voiceover
+
+  - id: voiceover
+    name: 配音方案
+    description: 基于脚本生成适合朗读的配音文本，并给出配音/音色提示，必要时生成配音音频
+    execution: delegate
+    tools:
+      - general_purpose_task
+      - name: tts
+        type: skill
+    agent:
+      model: gpt-4o
+      temperature: 0.5
+    checkpoint:
+      required_outputs:
+        voiceover_text:
+          type: string
+          min_length: 50
+          help: 优化后的配音朗读文本（含停顿标记）
+        voice_prompt:
+          type: string
+          min_length: 10
+          help: 配音音色/情绪提示词
+        voiceover_path:
+          type: string
+          min_length: 5
+          help: 配音文本保存的绝对路径
+        audio_path:
+          type: string
+          help: 若生成音频，保存的音频路径；未生成则为空字符串
+      conditions:
+        - natural: 配音文本已生成并保存
+          check: outputs.voiceover_text != null AND len(outputs.voiceover_text) > 50 AND outputs.voiceover_path != null
+          help: 确认配音文本非空且已落盘
+        - natural: 已指定配音音色
+          check: outputs.voice_prompt != null AND len(outputs.voice_prompt) > 10
+          help: 确认配音音色提示词已产出
+    next: music
+
+  - id: music
+    name: 背景音乐
+    description: 根据情绪钩子与风格匹配背景音乐情绪，输出音乐描述/提示词，必要时生成音频
+    execution: delegate
+    tools:
+      - general_purpose_task
+      - name: musicgen
+        type: skill
+    agent:
+      model: gpt-4o
+      temperature: 0.7
+    checkpoint:
+      required_outputs:
+        music_mood:
+          type: string
+          min_length: 2
+          help: 最终采用的音乐情绪
+        music_prompt:
+          type: string
+          min_length: 20
+          help: 背景音乐生成/检索提示词
+        music_path:
+          type: string
+          help: 若生成音频，保存的音频路径；未生成则为空字符串
+        music_plan_path:
+          type: string
+          min_length: 5
+          help: 音乐方案保存的绝对路径
+      conditions:
+        - natural: 音乐方案已生成并保存
+          check: outputs.music_prompt != null AND len(outputs.music_prompt) > 20 AND outputs.music_plan_path != null
+          help: 确认音乐提示词已产出且方案已落盘
+    next: assemble
+
+  - id: assemble
+    name: 合成导出
+    description: 整合脚本、分镜、封面、配音、配乐为 LibTV 画布 JSON 与素材清单，生成最终可导入包
+    execution: delegate
+    tools:
+      - general_purpose_task
+    agent:
+      model: gpt-4o
+      temperature: 0.4
+    checkpoint:
+      required_outputs:
+        canvas_json_path:
+          type: string
+          min_length: 5
+          help: LibTV 画布元数据 JSON 文件绝对路径
+        asset_manifest:
+          type: string
+          min_length: 50
+          help: 素材清单 JSON 字符串，含所有文件路径与用途
+        package_dir:
+          type: string
+          min_length: 5
+          help: 最终打包目录绝对路径
+        next_actions:
+          type: string
+          min_length: 20
+          help: 用户在 LibTV 中下一步需要做什么（如导入画布、点击合成、微调分镜）
+      conditions:
+        - natural: 画布 JSON 已生成
+          check: outputs.canvas_json_path != null AND len(outputs.canvas_json_path) > 5
+          help: 确认 LibTV 画布元数据已落盘
+        - natural: 素材清单已生成
+          check: outputs.asset_manifest != null AND len(outputs.asset_manifest) > 50
+          help: 确认素材清单非空
+        - natural: 已输出下一步操作指引
+          check: outputs.next_actions != null AND len(outputs.next_actions) > 20
+          help: 确认用户操作指引已产出
+    next: null
