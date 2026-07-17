@@ -1,0 +1,237 @@
+name: brain-storm
+description: "多角色跨领域脑爆工作流 - 从话题解构、随机选人、并行发散、用户筛选、定向调研、专家交叉激荡到收敛打磨的全流程。角色池包含10位专家和40位各色普通人，每次随机选5人参与，确保每次脑爆视角组合不同。普通人只参与第一轮发散，第二轮交叉激荡由专家负责。角色定义位于 flows/help/brain-storm-experts/ 目录，可随时扩充。"
+routing:
+  keywords:
+    - 脑暴
+    - 脑爆
+    - brainstorm
+    - 创意
+    - 发散
+    - 创新方案
+    - 头脑风暴
+    - idea
+  description_short: "多角色脑爆流程（解构→选人→发散→筛选→调研→激荡→收敛→确认）"
+  triggers:
+    - "(脑暴|脑爆|头脑风暴).{0,5}(流程|工作流|话题|一下)"
+    - "(创意|创新|发散).{0,5}(脑暴|脑爆|brainstorm|头脑风暴)"
+    - brainstorm
+  priority: 7
+params:
+  topic:
+    type: string
+    required: true
+    description: 需要脑爆的话题/问题/挑战
+  context:
+    type: string
+    required: false
+    default: ""
+    description: 话题背景信息（行业、已有方案、约束条件、目标用户等），留空则由AI在解构阶段自行分析
+  industry:
+    type: string
+    required: false
+    default: ""
+    description: 所属行业或领域（如教育、电商、SaaS、医疗等），辅助解构阶段的背景分析
+global_context: |
+  # 脑爆质量红线
+  - 拒绝平庸：避免陈词滥调（如"提升用户体验""优化流程"等空泛概念），所有创意必须具体化、场景化
+  - 数量优先于质量：发散阶段不自我审查，先追求广度再追求深度
+  - 逻辑自洽：天马行空的想法也要能自圆其说，解释其运作逻辑
+  - 每个创意必须包含标签（微创新/颠覆性创新/跨界融合）
+  - 禁止泛化建议：每个创意必须具体到"谁在什么场景下做什么"
+  - 创意名称控制在8字以内，一句话描述控制在30字以内
+
+  # 角色池说明
+  - 角色定义文件位于 flows/help/brain-storm-experts/ 目录
+  - 文件第一行标注 type: expert（专家）或 type: civilian（普通人）
+  - 每次脑暴随机选5人，专家和普通人混合
+  - 专家用主导思维模型发散（3-4个创意），普通人从自身经历发散（1-3个创意）
+  - 普通人不参与第二轮交叉激荡，仅专家参与
+token_budget:
+  total: 300000
+  per_step: 35000
+steps:
+  - id: deconstruct
+    name: 话题解构
+    checkpoint:
+      required_outputs:
+        core_essence:
+          type: string
+          min_length: 10
+          help: 一句话重新定义话题的核心本质（剥离表层描述，找到底层命题）
+        pain_points:
+          type: string
+          min_length: 100
+          help: 当前该话题领域的3个主流痛点或陈旧模式（每个痛点须具体、场景化）
+        scope_note:
+          type: string
+          min_length: 20
+          help: 话题边界与约束澄清（明确什么在范围内、什么不在范围内、有什么硬性约束）
+      conditions:
+        - natural: 话题本质已定义
+          check: outputs.core_essence != null AND len(outputs.core_essence) > 10
+          help: 确认已用一句话精准定义话题的底层核心
+        - natural: 痛点已识别
+          check: outputs.pain_points != null AND len(outputs.pain_points) > 100
+          help: 确认至少列出3个具体化、场景化的痛点
+        - natural: 话题边界已澄清
+          check: outputs.scope_note != null AND len(outputs.scope_note) > 20
+          help: 确认已明确话题的范围和约束
+    next: select-participants
+
+  - id: select-participants
+    name: 随机选择参与者
+    checkpoint:
+      required_outputs:
+        selected_participants:
+          type: string
+          min_length: 80
+          help: 随机选出的5位参与者（标注expert/civilian类型、名称、文件路径）
+        participant_mix_note:
+          type: string
+          min_length: 30
+          help: 本次选人组合说明（专家/普通人各几人、各自的独特视角简述）
+      conditions:
+        - natural: 5位参与者已选定
+          check: outputs.selected_participants != null AND len(outputs.selected_participants) > 80
+          help: 确认已随机选出5位参与者并给出类型、名称、文件路径
+        - natural: 选人组合已说明
+          check: outputs.participant_mix_note != null AND len(outputs.participant_mix_note) > 30
+          help: 确认说明了本次专家/普通人比例和各人独特视角
+    next: diverge
+
+  - id: diverge
+    name: 并行发散
+    checkpoint:
+      required_outputs:
+        ideas_collection:
+          type: string
+          min_length: 600
+          help: 全部5位参与者的创意合集（专家每人3-4个、普通人每人1-3个，每个含名称、描述、理由/原理、标签）
+        ideas_summary:
+          type: string
+          min_length: 30
+          help: 创意统计摘要（总创意数、按标签分类、按参与者和类型分布）
+      conditions:
+        - natural: 创意合集已产出
+          check: outputs.ideas_collection != null AND len(outputs.ideas_collection) > 600
+          help: 确认5位参与者各自产出了创意
+        - natural: 创意统计已提供
+          check: outputs.ideas_summary != null AND len(outputs.ideas_summary) > 30
+          help: 确认有按标签和参与者的创意数量统计
+    next: user-screen
+
+  - id: user-screen
+    name: 用户筛选方向
+    checkpoint:
+      required_outputs:
+        user_decision:
+          type: string
+          pattern: "^proceed$|^redive$"
+          help: 用户决策：proceed（选中感兴趣方向，进入定向调研）/ redive（不满意，换一批人重新发散）
+        user_picks:
+          type: string
+          min_length: 10
+          help: 用户标记的感兴趣创意（创意编号/名称，或redive时的调整方向说明）
+        screen_notes:
+          type: string
+          min_length: 1
+          help: 用户筛选备注（对发散结果的感受、希望深挖的方向、"无备注"）
+      conditions:
+        - natural: 用户已做出决策
+          check: outputs.user_decision != null
+          help: 确认用户已审核创意合集并给出proceed或redive决策
+        - natural: 用户选择已记录
+          check: outputs.user_picks != null AND len(outputs.user_picks) > 10
+          help: 确认用户已标记感兴趣的创意或说明调整方向
+        - natural: 用户备注已记录
+          check: outputs.screen_notes != null AND len(outputs.screen_notes) > 0
+          help: 确认用户的筛选反馈已被记录
+    next:
+      pass: moderator-research
+      fail: select-participants
+
+  - id: moderator-research
+    name: 定向调研
+    checkpoint:
+      required_outputs:
+        research_insights:
+          type: string
+          min_length: 100
+          help: 定向调研报告（仅针对用户选中的1-3个创意方向，收集事实依据、验证关键假设、补充领域知识）
+        research_for_experts:
+          type: string
+          min_length: 50
+          help: 给专家激荡的调研摘要（提炼调研中最有价值的事实、数据和反直觉发现，供专家参考）
+      conditions:
+        - natural: 定向调研已完成
+          check: outputs.research_insights != null AND len(outputs.research_insights) > 100
+          help: 确认已围绕用户选中的方向进行了调研
+        - natural: 专家参考摘要已产出
+          check: outputs.research_for_experts != null AND len(outputs.research_for_experts) > 50
+          help: 确认已为专家激荡提炼了可操作的调研要点
+    next: cross-inspire
+
+  - id: cross-inspire
+    name: 专家交叉激荡
+    checkpoint:
+      required_outputs:
+        inspired_ideas:
+          type: string
+          min_length: 500
+          help: 激荡后的升级创意（仅本轮选中的专家围绕用户选中的方向进行第二轮碰撞）
+        cross_notes:
+          type: string
+          min_length: 50
+          help: 跨专家碰撞说明（哪些创意被组合、哪些被反转、哪些被升级，碰撞逻辑）
+      conditions:
+        - natural: 升级创意已产出
+          check: outputs.inspired_ideas != null AND len(outputs.inspired_ideas) > 500
+          help: 确认专家围绕用户选中方向进行了第二轮创意碰撞
+        - natural: 碰撞说明已记录
+          check: outputs.cross_notes != null AND len(outputs.cross_notes) > 50
+          help: 确认记录了跨专家碰撞的逻辑和创意演进路径
+    next: converge
+
+  - id: converge
+    name: 收敛打磨
+    checkpoint:
+      required_outputs:
+        top_ideas:
+          type: string
+          min_length: 500
+          help: 3个精选方案（每个含一句话卖点、核心价值、可行性速览，从微创新/颠覆性/跨界各选1个最具潜力的）
+        converge_notes:
+          type: string
+          min_length: 50
+          help: 收敛过程说明（为什么选这3个、淘汰了什么、选择标准是什么）
+      conditions:
+        - natural: 精选方案已产出
+          check: outputs.top_ideas != null AND len(outputs.top_ideas) > 500
+          help: 确认3个精选方案都有卖点、核心价值和可行性分析
+        - natural: 收敛说明已记录
+          check: outputs.converge_notes != null AND len(outputs.converge_notes) > 50
+          help: 确认说明了选择逻辑和淘汰理由
+    next: user-confirm
+
+  - id: user-confirm
+    name: 用户最终确认
+    checkpoint:
+      required_outputs:
+        user_decision:
+          type: string
+          pattern: "^confirm$|^iterate$"
+          help: 用户决策：confirm（确认方案，脑暴结束）/ iterate（继续迭代，回到交叉激荡）
+        confirm_notes:
+          type: string
+          min_length: 1
+          help: 用户最终反馈（对3个精选方案的评价、调整建议、"确认通过"）
+      conditions:
+        - natural: 用户已做出最终决策
+          check: outputs.user_decision != null
+          help: 确认用户已审核精选方案并给出confirm或iterate决策
+        - natural: 最终反馈已记录
+          check: outputs.confirm_notes != null AND len(outputs.confirm_notes) > 0
+          help: 确认用户的最终评价已被记录
+    next:
+      pass: null
+      fail: cross-inspire
